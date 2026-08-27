@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { IBM_Plex_Mono, IBM_Plex_Sans } from 'next/font/google'
 import type { ReactNode } from 'react'
 
 import './globals.css'
@@ -10,6 +11,31 @@ import './globals.css'
  * needs no provider, and there is nothing to send anywhere — `connect-src 'self'` in `next.config.mjs` would
  * block it, which is the point rather than an inconvenience.
  */
+
+/*
+ * The type pair, self-hosted — and self-hosted is not a preference here. `font-src 'self'` in
+ * `next.config.mjs` blocks a webfont CDN outright, because a font request to a third party is that third
+ * party learning who opened the app. `next/font/google` downloads at build time and serves from this
+ * origin, so there is no runtime request to anywhere. A `<link>` to fonts.googleapis.com would be a CSP
+ * violation and a blank page's worth of unstyled text.
+ *
+ * Three weights of text and two of mono, and no more: every weight is another file the browser fetches,
+ * and an interface this dense has nowhere to put a fourth. 400 for body, 500 for column headers and
+ * labels, 600 for the numbers in the header bar that have to be findable without looking for them.
+ */
+const sans = IBM_Plex_Sans({
+  subsets: ['latin'],
+  weight: ['400', '500', '600'],
+  variable: '--font-sans',
+  display: 'swap',
+})
+
+const mono = IBM_Plex_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500'],
+  variable: '--font-mono',
+  display: 'swap',
+})
 
 export const metadata: Metadata = {
   title: 'Veil — clean a spreadsheet with an agent that cannot read it',
@@ -28,7 +54,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className={`${sans.variable} ${mono.variable}`}>
       {/*
         `h-dvh` rather than `h-screen`: on mobile Safari `100vh` is taller than the visible viewport, which puts
         the reveal dialog's buttons underneath the browser chrome — on the one screen where the human has to be
