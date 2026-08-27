@@ -29,6 +29,21 @@ order of fidelity:
 You don't need a real agent for most work. You do need one before claiming a tool works — see
 [Testing a tool](#testing-a-tool).
 
+### `npm audit` is not clean, on purpose
+
+Two advisories remain, both against the PostCSS that Next 15 pins internally, and both fixable only by
+upgrading to Next 16. We are staying on 15 for now: the advisories are build-time path traversal and
+CSS-stringifier XSS, the only stylesheet Next processes here is our own, and no untrusted CSS reaches
+the build. Upgrading a framework major is a change worth making deliberately rather than to make a
+number go to zero.
+
+If you upgrade it, say so in the PR and check `next.config.mjs` first — the WebMCP origin trial token is
+served as an HTTP header from there, and that is the part most likely to move.
+
+Anything that ships to the browser is a different matter. A runtime advisory in `react`, `next`,
+`zustand` or `papaparse` is a real finding here, because this app's entire claim is that the file never
+leaves the tab.
+
 ---
 
 ## Four rules that aren't negotiable
