@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Owner: Faiq.
+ *
+ * Everything here is either a token the whole app needs or a rule Tailwind cannot express. If you can write it
+ * as a utility class on the element, write it there instead — a global rule in this file applies to code that
+ * has not been written yet, including somebody else's.
+ */
+
+@layer base {
+  :root {
+    /* Grid geometry. In one place because the table header, the row virtualiser and the agent's hatched view
+       all have to agree on it: two of them are in different components, and a 1px disagreement reads as a
+       rendering bug rather than a spacing choice. */
+    --row-height: 28px;
+    --cell-padding-x: 10px;
+    --col-min-width: 96px;
+  }
+
+  html {
+    @apply bg-base text-ink;
+    /* No smooth scrolling: this is a data table, and a human hunting for row 4,182 wants the jump. */
+  }
+
+  body {
+    @apply font-sans text-sm antialiased;
+  }
+
+  /* Tabular figures everywhere a number appears. Proportional digits make a column of counts ragged, and a
+     ragged column of counts is one you have to read instead of scan. */
+  .num,
+  td,
+  th {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Focus ring. Visible, and never removed — the reveal dialog is keyboard-operable by people who will not be
+     using a mouse, and the two buttons on it are Approve and Refuse. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-human ring-offset-1 ring-offset-panel;
+  }
+
+  ::selection {
+    @apply bg-human/20;
+  }
+}
+
+@layer components {
+  /*
+   * The veil.
+   *
+   * A hatch, not a blur. A blur of real text is not a privacy control — it is recoverable, it *looks*
+   * recoverable, and it invites the user to lean in and squint at it. The hatch is honest: there is nothing
+   * underneath to recover, because the value was never put in the DOM for the agent's view in the first place.
+   *
+   * TODO(faiq), Day 4: this is the class the agent's pane puts on withheld cells. Do not add a `:hover` rule
+   * that lifts it. Somebody will ask for one, it will demo beautifully, and it turns the entire product into a
+   * spreadsheet with a screen door on it.
+   */
+  .veil-hatch {
+    @apply bg-hatch text-transparent select-none;
+  }
+
+  /* A k-anonymity refusal, rendered as a margin note rather than an error. Informative, not a failure. */
+  .veil-suppressed {
+    @apply text-suppressed text-2xs font-mono;
+  }
+
+  /* A cell the human chose to uncover. Loud on purpose, and permanent in the journal. */
+  .veil-revealed {
+    @apply text-revealed font-mono;
+    box-shadow: inset 0 -2px 0 0 theme('colors.revealed');
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

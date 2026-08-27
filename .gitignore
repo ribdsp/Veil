@@ -1,0 +1,53 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next
+.next/
+out/
+build/
+dist/
+
+# env — tokens never belong in the repository
+.env
+.env.local
+.env*.local
+.env.production
+
+# testing
+coverage/
+.nyc_output/
+
+# local notes, not part of the published project
+internal/
+
+# datasets
+#
+# This is the rule the whole project is about, expressed in the one place git enforces it.
+# Anything a real person could be identified from must not reach version control, and a CSV
+# dropped into Veil during development is exactly that. Only the synthetic samples generated
+# by fixtures/ are allowed — see docs/threat-model.md (T6).
+*.csv
+*.xlsx
+*.xls
+!veil/public/samples/*.csv
+
+# vercel
+.vercel/
+
+# editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# ai agent
+.claude/
+.cursor/
+.codex/
