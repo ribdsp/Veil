@@ -30,9 +30,16 @@ const config: Config = {
         edge: '#c4bdb0',
 
         // Text.
+        //
+        // Every token below that ever carries text clears WCAG AA (4.5:1) against all three surfaces
+        // above, and the tightest of them is `faint` at 4.59:1 on `base`. That is measured, not assumed.
+        // Before lightening any of these — and somebody will want to, because 4.5:1 on warm paper looks
+        // heavier than it needs to — re-measure. `faint` and `suppressed` are both used at `text-2xs`,
+        // which is 11px, which is normal text by every definition: the large-text exemption starts at
+        // 18.66px bold. A privacy refusal nobody can read is not a gentler refusal.
         ink: '#1c1a17',
         muted: '#6b655c',
-        faint: '#989185',
+        faint: '#726b60',
 
         /**
          * State of a value, and the heart of the interface.
@@ -43,14 +50,16 @@ const config: Config = {
          *
          * `suppressed` is a k-anonymity refusal: a real answer existed but describing it would have
          * described too few people. It is *informative*, not a failure, so it gets the colour of a
-         * margin note.
+         * margin note — an ink-brown rather than an amber warning. It is darker than a warning colour
+         * usually is because it is set at 11px mono, and this is the one sentence in the interface the
+         * human most needs to actually read.
          *
          * `revealed` is the loud one. A cell the human chose to uncover is the single most expensive
          * event in the app, it is permanent in the journal, and it should be visible from across the
          * room. Nothing else may use this colour.
          */
         veiled: '#5b6b7a',
-        suppressed: '#a8823c',
+        suppressed: '#7f6120',
         revealed: '#b5322a',
 
         // Authorship. Every journal entry and every mutation is tinted by who caused it. Kept distinct
@@ -59,17 +68,37 @@ const config: Config = {
         human: '#2f6f9f',
         agent: '#6f4fa8',
 
-        // Data quality findings, for the issues list only.
+        // Data quality findings, for the issues list only. `error` and `warn` deliberately hold the same
+        // values as `revealed` and `suppressed`: an issue-list severity and a privacy state are different
+        // questions, so they get different names, but a reader should never see two nearly-identical
+        // ambers on one screen and have to work out whether the difference means something. Keep them in
+        // step — two tokens that are meant to match and quietly drift is a bug that surfaces six weeks on.
         error: '#b5322a',
-        warn: '#a8823c',
-        ok: '#3f7d58',
+        warn: '#7f6120',
+        ok: '#3a7350',
       },
       fontFamily: {
-        // Placeholder. Faiq picks the real pair on Day 6; system-ui as "the design" is banned. The
-        // brief is a text face with real proportions for the document surface, and a mono with
-        // unambiguous zero and one for anything showing a value or a count.
-        sans: ['ui-sans-serif', 'system-ui', 'sans-serif'],
-        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        /*
+         * IBM Plex Sans and IBM Plex Mono, loaded from `src/app/layout.tsx` via `next/font` and served
+         * from this origin — `font-src 'self'` in `next.config.mjs` makes a CDN impossible, not merely
+         * discouraged.
+         *
+         * One family for both faces, so the text and the numbers share metrics: a count in mono sitting
+         * beside a label in sans lines up on the baseline without either being nudged, which is most of
+         * what makes a dense table readable. Plex is also the right register — it was cut for technical
+         * documents rather than for terminals, and the argument at the top of this file is that Veil is a
+         * records office and not a console.
+         *
+         * Plex Mono earns its place on two glyphs: the slashed zero and the serifed `1`. Every number in
+         * this interface is either a count the human is auditing (`4/12` of a query budget) or a masked
+         * exemplar they are comparing against a real value (`+62 999-9999-9999`), and a mono that renders
+         * `0` like `O` or `1` like `l` turns both of those into a squint.
+         *
+         * The fallback stack stays: if the build-time font download fails, the app degrades to a system
+         * face rather than to Times New Roman.
+         */
+        sans: ['var(--font-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       fontSize: {
         // Dense by default. A dataset profile is a table of numbers, not a hero section.
