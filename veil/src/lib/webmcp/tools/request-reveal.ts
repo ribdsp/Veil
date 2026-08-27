@@ -1,4 +1,7 @@
-import { notImplemented, type ToolDefinition } from '../tool-types'
+import { callerIsTrusted, noteToolCall } from '@/lib/guard/host'
+import { activeGuard } from '@/lib/guard/session'
+
+import { json, noDataset, requireInteger, requireString, toolError, type ToolDefinition } from '../tool-types'
 
 /**
  * Petition a human for one cell, with a written reason, and accept being told no.
@@ -53,23 +56,95 @@ export const requestReveal: ToolDefinition = {
     required: ['row', 'column', 'reason'],
     additionalProperties: false,
   },
-  async execute() {
-    // TODO(riko), Day 6:
-    //   - `isTrustedCaller`; then validate the row is in range and the column exists
-    //   - refuse immediately if this (row, column) has already been refused this session, and say so.
-    //     Re-asking is the failure mode the description warns against, and enforcing it in code is more
-    //     reliable than asking a model not to
-    //   - `createGate('reveal', { granted: false, reason: 'no response' })`, push a `RevealRequest` into
-    //     the store, and await
-    //   - journal the request *and* the decision as separate entries. A request that was refused is the
-    //     most interesting line in the journal and must survive independently of the outcome
-    //   - on grant, return the value plainly, with a reminder in the same response that it is now in the
-    //     model's context permanently and should not be repeated back in the report
-    //
-    // Deliberately not implemented: partial reveals (last four digits, domain only). The masking
-    // primitives already exist in `redact.ts` and `maskColumn` has a `keep` field; what is missing is
-    // the request shape and the approval UI. docs/privacy-guard.md flags it as the best first
-    // contribution to this repository, and it belongs here.
-    return notImplemented('request_reveal')
+  async execute(args) {
+    if (!callerIsTrusted()) {
+      return json({
+        status: 'refused',
+        reason:
+          'This tool is only available to the page itself, and this call did not come from it. No value was ' +
+          'read and no request reached the human.',
+      })
+    }
+
+    const guard = activeGuard()
+    if (guard === null) return noDataset()
+
+    const row = requireInteger(args, 'row')
+    if (!row.ok) return toolError(row.error)
+    if (row.value < 0) {
+      return toolError("'row' must be 0 or above — a row number as returned by find_issues or find_duplicates.")
+    }
+
+    const column = requireString(args, 'column')
+    if (!column.ok) return toolError(column.error)
+
+    const reason = requireString(args, 'reason')
+    if (!reason.ok) return toolError(reason.error)
+    if (reason.value.trim().length === 0) {
+      return toolError(
+        "'reason' cannot be blank. It is shown to the person who owns the file, word for word, and it is " +
+          'the whole basis on which they decide. Say what you will do with the value and what you cannot ' +
+          'do without it.',
+      )
+    }
+
+    noteToolCall('request_reveal', `row ${row.value} of "${column.value}"`)
+
+    // The guard validates the row and column as *metadata* — in range, exists — and then waits for a person.
+    // It never reads the cell: the value in a granted decision is put there by the UI, next to the human who
+    // approved it. A refusal, including a timeout, is remembered for the rest of the session.
+    const outcome = await guard.reveal({ column: column.value, row: row.value, reason: reason.value })
+
+    switch (outcome.status) {
+      case 'granted':
+        return json({
+          status: 'granted',
+          row: row.value,
+          column: column.value,
+          value: outcome.value,
+          note:
+            'A person decided to show you this. It is now in your context permanently and cannot be taken ' +
+            'back: do not repeat it in your cleanup report, do not quote it in a later tool call, and do ' +
+            'not treat it as licence to ask for the neighbouring cells. Use it for the one decision you ' +
+            'asked for, then describe the decision rather than the value.',
+        })
+
+      case 'refused':
+        return json({
+          status: 'refused',
+          row: row.value,
+          column: column.value,
+          reason: outcome.reason,
+          note:
+            'A normal answer, not an error, and the end of this request. Do not ask for this cell again — a ' +
+            'second request for the same cell is refused without reaching anybody. Carry on without the ' +
+            'value: say in your report that row ' +
+            `${row.value} of "${column.value}" needs a person to look at it, and why.`,
+        })
+
+      case 'alreadyRefused':
+        return json({
+          status: 'alreadyRefused',
+          row: row.value,
+          column: column.value,
+          reason: outcome.reason,
+          note:
+            'This cell was already refused earlier in the session, so the request was not put to anybody ' +
+            'again. Repeating a refused request turns a considered decision into an attrition contest, ' +
+            'which is why it is enforced here rather than merely discouraged. List the row in your report ' +
+            'and move on.',
+        })
+
+      case 'invalid':
+        return json({
+          status: 'invalid',
+          row: row.value,
+          column: column.value,
+          reason: outcome.reason,
+          note:
+            'Nothing was asked of the human, because the row or column does not exist. Check the row ' +
+            'numbers against a fresh find_issues result and the column name against describe_dataset.',
+        })
+    }
   },
 }

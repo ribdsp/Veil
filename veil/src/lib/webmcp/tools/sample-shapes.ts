@@ -1,4 +1,7 @@
-import { notImplemented, type ToolDefinition } from '../tool-types'
+import { noteToolCall } from '@/lib/guard/host'
+import { activeGuard } from '@/lib/guard/session'
+
+import { fromVerdict, noDataset, requireString, toolError, type ToolDefinition } from '../tool-types'
 
 /**
  * Masked exemplars, grouped by the format they match.
@@ -16,9 +19,9 @@ import { notImplemented, type ToolDefinition } from '../tool-types'
 export const sampleShapes: ToolDefinition = {
   name: 'sample_shapes',
   description:
-    'Show masked examples from a column, grouped by the format each matches. Digits become 9, ' +
+    'Show masked examples from a column, grouped by the format each matches. Digits become 0, ' +
     'uppercase letters A, lowercase a; spaces and punctuation are preserved, so 27/08/2026 comes back ' +
-    'as 99/99/9999. Use this to see the shape of values you could not classify before writing a ' +
+    'as 00/00/0000. Use this to see the shape of values you could not classify before writing a ' +
     'transform for them. Never returns a real value, and you cannot request the shape of a specific row.',
   inputSchema: {
     type: 'object',
@@ -36,12 +39,34 @@ export const sampleShapes: ToolDefinition = {
     required: ['column'],
     additionalProperties: false,
   },
-  async execute() {
-    // TODO(riko), Day 3:
-    //   - `guard.shapes(column, { onlyUnrecognised })` — one charge
-    //   - at most 10 exemplars total, at most 8 buckets, and buckets below k are not shown at all
-    //   - if every bucket is below k, refuse with `belowK` and say the column is too varied to sample
-    //     rather than returning an empty list, which reads as "this column is clean"
-    return notImplemented('sample_shapes')
+  async execute(args) {
+    const guard = activeGuard()
+    if (guard === null) return noDataset()
+
+    const column = requireString(args, 'column')
+    if (!column.ok) return toolError(column.error)
+
+    const flag = args['onlyUnrecognised']
+    if (flag !== undefined && typeof flag !== 'boolean') {
+      return toolError("'onlyUnrecognised' must be true or false when given.")
+    }
+    const onlyUnrecognised = flag === true
+
+    noteToolCall('sample_shapes', onlyUnrecognised ? `${column.value}, unrecognised only` : column.value)
+
+    // Ten exemplars, drawn one per bucket before two from any bucket, so a column with one messy shape and
+    // one clean one shows both rather than ten of whichever is more common.
+    return fromVerdict(guard.shapeSample(column.value, 10, onlyUnrecognised), (sample) => ({
+      column: column.value,
+      onlyUnrecognised,
+      shapes: sample.shapes.map((shape) => ({ format: shape.format, masked: shape.masked })),
+      buckets: sample.buckets.map((bucket) => ({
+        format: bucket.format,
+        count: bucket.count,
+        share: bucket.share,
+      })),
+      truncated: sample.truncated,
+      ...(sample.note === null ? {} : { maskingNote: sample.note }),
+    }))
   },
 }

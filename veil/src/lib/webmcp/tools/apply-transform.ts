@@ -1,4 +1,8 @@
-import { notImplemented, type ToolDefinition } from '../tool-types'
+import { callerIsTrusted, noteToolCall } from '@/lib/guard/host'
+import { activeGuard, activeSourceName } from '@/lib/guard/session'
+
+import { json, noDataset, requireString, toolError, type ToolDefinition } from '../tool-types'
+import { findProposal, markCommitted } from './proposals'
 
 /**
  * Commit a transform. Trusted, human-approved, and undoable.
@@ -43,20 +47,111 @@ export const applyTransform: ToolDefinition = {
     required: ['proposalId', 'reason'],
     additionalProperties: false,
   },
-  async execute() {
-    // TODO(riko), Day 6:
-    //   - `isTrustedCaller` first; refuse with the reason if the origin is not trusted
-    //   - look up the proposal; an unknown or already-committed id is an error that names why
-    //   - open a gate so the human approves this specific diff, and fail closed on timeout — a
-    //     transform that commits because nobody was watching is exactly the outcome this design exists
-    //     to prevent
-    //   - apply through the same `applyTransform` path the dry run used, with `commit: true`
-    //   - push an `AppliedTransform` with `previousValues` before mutating, not after
-    //   - journal with `irreversible: true` for dropColumn and maskColumn
-    //
-    // `previousValues` is a `ReadonlyMap<RowId, string>` of the *old* cells, which means the undo stack
-    // holds real values. It never crosses the guard and no tool can read it, and that asymmetry is
-    // intentional: undo has to be exact, and an approximate undo on someone's data is not undo.
-    return notImplemented('apply_transform')
+  async execute(args) {
+    // Trust first, before the arguments are even read. `exposedTo` is supposed to keep this tool away from
+    // untrusted origins, but it fails open where a host has not implemented it, so the check is repeated
+    // here where it fails closed instead. docs/threat-model.md T4.
+    if (!callerIsTrusted()) {
+      return json({
+        status: 'refused',
+        reason:
+          'This tool is only available to the page itself, and this call did not come from it. Nothing was ' +
+          'changed. Read-only tools are still available to you.',
+      })
+    }
+
+    const guard = activeGuard()
+    if (guard === null) return noDataset()
+
+    const proposalId = requireString(args, 'proposalId')
+    if (!proposalId.ok) return toolError(proposalId.error)
+
+    const reason = requireString(args, 'reason')
+    if (!reason.ok) return toolError(reason.error)
+    if (reason.value.trim().length === 0) {
+      return toolError(
+        "'reason' cannot be blank. A person reads it before deciding, and an unexplained change is usually " +
+          'refused — say what is wrong with the column and what this fixes.',
+      )
+    }
+
+    const proposal = findProposal(proposalId.value)
+    if (proposal === null) {
+      return toolError(
+        `No proposal "${proposalId.value}". Ids come from propose_transform and belong to this session only ` +
+          `— call it again to get a fresh dry run, then commit that id. A transform is never applied from a ` +
+          `spec sent straight to this tool, because the human approves the diff they were shown, not a ` +
+          `description of one.`,
+      )
+    }
+    if (proposal.committed) {
+      return toolError(
+        `Proposal "${proposal.id}" has already been applied (${proposal.spec.kind} on ` +
+          `"${proposal.spec.column}"). Re-running it would transform values that are already transformed. ` +
+          `Dry-run the column again to see where it stands now.`,
+      )
+    }
+    // A proposal describes the diff for one file. Committing it against another is a change nobody previewed,
+    // even where the column names happen to line up.
+    if (proposal.source !== activeSourceName()) {
+      return toolError(
+        `Proposal "${proposal.id}" was a dry run on "${proposal.source ?? 'no file'}", and the file now ` +
+          `loaded is "${activeSourceName() ?? 'none'}". Nothing was changed. Dry-run the column again ` +
+          `against this file and commit the new id.`,
+      )
+    }
+
+    noteToolCall('apply_transform', `${proposal.spec.kind} on ${proposal.spec.column} via ${proposal.id}`)
+
+    // The gate lives inside `guard.commit`: it dry-runs the spec again, shows *that* report to the human,
+    // waits, and applies only on approval — failing closed on timeout, because a transform that commits
+    // because nobody was watching is the exact outcome this design exists to prevent.
+    const outcome = await guard.commit(proposal.spec, proposal.rows, reason.value)
+
+    if (outcome.status === 'refused') {
+      return json({
+        status: 'refused',
+        code: outcome.code,
+        reason: outcome.reason,
+        transform: proposal.spec,
+        note:
+          outcome.code === 'notApproved'
+            ? 'The human declined, or nobody answered in time. This is a normal outcome, not an error: ' +
+              'leave the column as it is, note in your report which rows a person still needs to look at, ' +
+              'and carry on with the rest of the work. Do not re-propose the same change hoping for a ' +
+              'different answer.'
+            : outcome.code === 'datasetChanged'
+              ? 'The dataset changed between the dry run and the commit, so this proposal describes a file ' +
+                'that no longer exists. Dry-run it again and commit the new id.'
+              : 'The transform could not be applied as specified. Profile the column and propose a ' +
+                'different one.',
+      })
+    }
+
+    markCommitted(proposal.id)
+    const report = outcome.report
+
+    return json({
+      status: 'applied',
+      transformId: outcome.id,
+      proposalId: proposal.id,
+      transform: proposal.spec,
+      changedCount: report.changedCount,
+      unchangedCount: report.unchangedCount,
+      failedCount: report.failedCount,
+      failedRowIds: report.failedRowIds,
+      irreversible: outcome.irreversible,
+      undoable: !outcome.irreversible,
+      note: outcome.irreversible
+        ? 'Applied, and this one cannot be undone — the previous values are not kept for a drop or a mask, ' +
+          'so undo_last will refuse it. Say so in your report.'
+        : `Applied. undo_last will restore the ${report.changedCount} changed row(s) if this was not what ` +
+          `you intended — undoing costs nothing, but it does not refund the questions you spent getting ` +
+          `here.` +
+          (report.failedCount > 0
+            ? ` ${report.failedCount} row(s) could not be transformed and were left exactly as they were; ` +
+              `they are listed in failedRowIds and are the ones to mention to the human.`
+            : ''),
+    })
   },
 }

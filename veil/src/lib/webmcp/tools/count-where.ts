@@ -1,4 +1,8 @@
-import { notImplemented, type ToolDefinition } from '../tool-types'
+import { noteToolCall } from '@/lib/guard/host'
+import { parseQuery } from '@/lib/guard/predicate'
+import { activeGuard } from '@/lib/guard/session'
+
+import { fromVerdict, noDataset, refusal, type ToolDefinition } from '../tool-types'
 
 /**
  * How many rows match a structured predicate.
@@ -70,17 +74,54 @@ export const countWhere: ToolDefinition = {
     required: ['conditions', 'join'],
     additionalProperties: false,
   },
-  async execute() {
-    // TODO(riko), Day 3:
-    //   - parse into a `Query` via `guard/predicate.ts`; it owns the arity check, the column check and
-    //     the format-enum check, and it must run before anything touches a row
-    //   - `guard.count(query)` — charges one question against **every** column named in the predicate
-    //   - shape through `fromVerdict`, so the suppressed branch cannot be formatted as a number
-    //
-    // The subtlety worth stating: predicate validation and result suppression are two different
-    // decisions. "Was this a legitimate question" is not the same as "is this a legitimate answer", and
-    // collapsing them into one check is how a guard ends up with a hole. See docs/architecture.md,
-    // steps 3 and 6 of the guarded-question flow.
-    return notImplemented('count_where')
+  async execute(args) {
+    const guard = activeGuard()
+    if (guard === null) return noDataset()
+
+    // Validation first, and all of it, before a row is read. `predicate.ts` owns the arity check, the column
+    // check and the format enum; a predicate specific enough to describe one person is rejected here rather
+    // than evaluated and then suppressed. Two different decisions — see docs/architecture.md, steps 3 and 6.
+    const parsed = parseQuery(args, guard.columns())
+    if (!parsed.ok) {
+      // Nothing was charged: the question never reached the data. The budget reported is the one the agent
+      // still has for the columns it named, so a rejected predicate does not read as an exhausted column.
+      return refusal(parsed.code, parsed.reason, guard.remainingFor(namedColumns(args)))
+    }
+
+    const query = parsed.query
+    noteToolCall(
+      'count_where',
+      `${query.conditions.length} condition(s) joined by "${query.join}" over ` +
+        `${namedColumns(args).length > 0 ? namedColumns(args).join(', ') : 'no column'}`,
+    )
+
+    return fromVerdict(guard.count(query), (matched) => ({
+      matchingRows: matched,
+      join: query.join,
+      // Echoed back from the parsed query, not from the arguments. What comes back is exactly what was
+      // understood, which is how an agent discovers that a field the schema does not have — `pattern`,
+      // `regex`, `not` — was never read rather than silently honoured.
+      conditionsUnderstood: query.conditions,
+    }))
   },
+}
+
+/**
+ * Column names the raw arguments mention, defensively.
+ *
+ * Only for reporting the remaining budget on a rejected predicate, so it has to cope with arguments that
+ * failed validation: a non-array `conditions`, a condition that is a string, a `column` that is a number.
+ * Anything it cannot read is simply not named.
+ */
+function namedColumns(args: Record<string, unknown>): readonly string[] {
+  const conditions = args['conditions']
+  if (!Array.isArray(conditions)) return []
+
+  const names = conditions.flatMap((condition) => {
+    if (typeof condition !== 'object' || condition === null) return []
+    const column = (condition as Record<string, unknown>)['column']
+    return typeof column === 'string' && column.length > 0 ? [column] : []
+  })
+
+  return [...new Set(names)]
 }

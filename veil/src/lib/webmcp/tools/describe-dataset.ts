@@ -1,4 +1,7 @@
-import { notImplemented, type ToolDefinition } from '../tool-types'
+import { activeGuard, activeSourceName } from '@/lib/guard/session'
+import { noteToolCall } from '@/lib/guard/host'
+
+import { fromVerdict, noDataset, type ToolDefinition } from '../tool-types'
 
 /**
  * The first tool any agent should call.
@@ -26,14 +29,40 @@ export const describeDataset: ToolDefinition = {
     additionalProperties: false,
   },
   async execute() {
-    // TODO(riko), Day 2:
-    //   - read the dataset from the store; `noDataset()` if none
-    //   - call `guard.describe()` and shape the DatasetSummary through `fromVerdict`
-    //   - include `k`, `queriesPerColumn`, and the count of columns already exhausted
-    //   - journal a 'describeDataset' entry with author 'agent'
-    //
-    // Free of charge on purpose: it spends no per-column budget. Charging for orientation would push
-    // the agent to guess at column names, and a guessed column name costs a question anyway.
-    return notImplemented('describe_dataset')
+    const guard = activeGuard()
+    if (guard === null) return noDataset()
+
+    const settings = guard.settings()
+    noteToolCall('describe_dataset', `${settings.columnCount} columns, ${settings.rowCount} rows`)
+
+    return fromVerdict(guard.describe(), (summary) => ({
+      sourceName: activeSourceName(),
+      rowCount: summary.rowCount,
+      columns: summary.columns.map((column) => ({
+        name: column.id,
+        type: column.type,
+        emptyCount: column.emptyCount,
+        // `'unique'` rather than a number when every value differs. The number would be the row count,
+        // which is already in this response; the word is the fact worth acting on, because a column of
+        // unique values is an identifier — something to normalise, not something to analyse.
+        distinctCount: column.distinctCount,
+      })),
+      privacy: {
+        minGroupSize: summary.minGroupSize,
+        queriesPerColumn: settings.queriesPerColumn,
+        columnsExhausted: settings.exhausted.length,
+        exhaustedColumns: settings.exhausted,
+        revealsGranted: settings.revealsGranted,
+        transformsApplied: settings.undoDepth,
+        // Worth stating plainly: with no host installed nothing is journalled and no write can be
+        // approved, so every transform and reveal will refuse. That is a wiring fault in the page, not
+        // something the agent can fix, and an agent that knows it will say so instead of retrying.
+        journalled: settings.hostInstalled,
+      },
+      note:
+        `Answers describing fewer than ${summary.minGroupSize} rows are withheld, and each column ` +
+        `answers at most ${settings.queriesPerColumn} questions this session. This call is free; every ` +
+        `other read costs one question per column it touches. No tool returns a cell value.`,
+    }))
   },
 }

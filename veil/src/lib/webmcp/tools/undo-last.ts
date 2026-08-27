@@ -1,4 +1,7 @@
-import { notImplemented, type ToolDefinition } from '../tool-types'
+import { callerIsTrusted, noteToolCall } from '@/lib/guard/host'
+import { activeGuard } from '@/lib/guard/session'
+
+import { json, noDataset, type ToolDefinition } from '../tool-types'
 
 /**
  * Take back the last reversible transform.
@@ -25,16 +28,69 @@ export const undoLast: ToolDefinition = {
     additionalProperties: false,
   },
   async execute() {
-    // TODO(riko), Day 6:
-    //   - `isTrustedCaller`, then pop the top of the undo stack
-    //   - an empty stack is a plain sentence, not an error: "nothing to undo"
-    //   - if the top entry is `irreversible`, refuse and name what it was — and leave it on the stack,
-    //     so a second call does not silently undo the transform beneath it
-    //   - restore `previousValues` and journal an 'undoTransform' entry, author 'agent'
-    //
-    // Undo does not restore query budget, and that is deliberate. The questions were asked and the
-    // answers were received; rewinding the data does not rewind what the agent learned. Refunding
-    // budget on undo would make undo a way to buy more questions.
-    return notImplemented('undo_last')
+    if (!callerIsTrusted()) {
+      return json({
+        status: 'refused',
+        reason:
+          'This tool is only available to the page itself, and this call did not come from it. Nothing was ' +
+          'changed.',
+      })
+    }
+
+    const guard = activeGuard()
+    if (guard === null) return noDataset()
+
+    noteToolCall('undo_last', 'undo requested')
+
+    // The stack lives in the guard, holding `previousValues` for each applied transform. Those are real
+    // cell values, they never cross back out, and no tool can read them: undo has to be exact, and an
+    // approximate undo on somebody's data is not undo.
+    const outcome = guard.undo()
+
+    switch (outcome.status) {
+      case 'undone':
+        return json({
+          status: 'undone',
+          transformId: outcome.id,
+          transform: outcome.kind,
+          column: outcome.column,
+          restoredCount: outcome.restoredCount,
+          note:
+            `Undone: ${outcome.restoredCount} row(s) in "${outcome.column}" are back to their previous ` +
+            `values. Your query budget is unchanged — the questions were asked and the answers received, ` +
+            `and rewinding the data does not rewind what you learned. Profile the column again if you need ` +
+            `to see where it now stands; that costs a question.`,
+        })
+
+      case 'empty':
+        return json({
+          status: 'nothingToUndo',
+          note:
+            'Nothing to undo: no transform has been applied in this session. This is not an error. If a ' +
+            'column looks wrong, it looked that way in the file.',
+        })
+
+      case 'irreversible':
+        return json({
+          status: 'irreversible',
+          transform: outcome.kind,
+          column: outcome.column,
+          note:
+            `The last transform was ${outcome.kind} on "${outcome.column}", which cannot be undone — the ` +
+            `previous values were not kept, by design, because a stored copy of a column somebody asked to ` +
+            `drop is the column still being there. It stays at the top of the stack, so calling undo_last ` +
+            `again will not quietly undo the transform underneath it instead. Tell the human what happened; ` +
+            `restoring that column means reloading the original file.`,
+        })
+
+      case 'failed':
+        return json({
+          status: 'failed',
+          reason: outcome.reason,
+          note:
+            'The undo could not be completed and the data was left as it was rather than half-restored. ' +
+            'Report this to the human before making any further change.',
+        })
+    }
   },
 }
