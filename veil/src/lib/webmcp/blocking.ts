@@ -46,6 +46,16 @@ export const GATE_TIMEOUT_MS = 25_000
 type PendingEntry = {
   resolve: (value: unknown) => void
   createdAt: number
+  /**
+   * This gate's own fail-closed default — the same value the timeout would have used.
+   *
+   * Stored per gate rather than derived, because `abandonAllGates` has no idea what kind of gate it is
+   * closing and there is no safe generic answer: `request_reveal` needs `{ granted: false }` and
+   * `ask_human` needs its last option. `unknown` here for the same reason `resolve` is: the map is
+   * heterogeneous, and the type is recovered by the fact that the fallback stored alongside a resolver is
+   * the one the resolver's own `createGate<T>` call produced.
+   */
+  fallback: unknown
 }
 
 /** Gates live for the tab's lifetime. There is no server, so there is nothing to expire against. */
@@ -99,7 +109,11 @@ export function createGate<T>(
     done(value)
   }
 
-  pending.set(id, { resolve: resolveWith as (value: unknown) => void, createdAt })
+  pending.set(id, {
+    resolve: resolveWith as (value: unknown) => void,
+    createdAt,
+    fallback: onTimeout,
+  })
 
   return {
     gate: { id, createdAt, expiresAt: createdAt + timeoutMs, resolve: resolveWith },
@@ -114,10 +128,17 @@ export function createGate<T>(
  * unknown, which happens legitimately: the human may answer a question that already timed out, and the
  * UI needs to be able to tell them so instead of pretending the click landed.
  *
- * TODO(vicko), Day 3: the components currently hold the `Gate` object from the store and call
- * `gate.resolve()` directly, which works and skips this function entirely. Decide on one path. This one
- * is better — it keeps the "is this gate still live?" question in one place — but only if the store
- * stops handing out the resolver.
+ * Two routes exist and both are kept, deliberately. `Gate.resolve` is part of the frozen `domain.ts`
+ * contract and the UI cards hold the gate object itself, so it cannot be withdrawn; this id-addressed
+ * route is what the console and the inspector can reach without a reference to a live object. They are
+ * safe to keep side by side because they are not two mechanisms: `answerGate` looks the gate up and calls
+ * the very same `resolveWith` closure that `gate.resolve` is, and that closure nulls `settle` before using
+ * it. Double-settling is therefore impossible whichever door the answer comes through, including a human
+ * clicking in the same millisecond the timer fires.
+ *
+ * What the two routes do differ in is the *false* return: `answerGate` can tell a caller the gate is gone,
+ * where `gate.resolve()` on a settled gate is a silent no-op. That is why UI that needs to say "too late,
+ * this one timed out" should prefer this function.
  */
 export function answerGate<T>(id: string, value: T): boolean {
   const entry = pending.get(id)
@@ -134,15 +155,22 @@ export function pendingGateIds(): string[] {
 /**
  * Abandon every open gate with its fail-closed default.
  *
- * TODO(vicko), Day 3: call this when a new dataset is loaded and when `tool-surface.tsx` unmounts. A
- * reveal request pointing at row 903 of a file that is no longer open is worse than useless — the row
- * id now addresses somebody else's record, and approving it would disclose a value the agent never
- * asked about.
+ * Called when the tool surface unmounts (`app/tool-surface.tsx`) and, once the store lands, when a new
+ * dataset is loaded. The second call site is the one that matters: a reveal request pointing at row 903 of
+ * a file that is no longer open is worse than useless — the row id now addresses somebody else's record,
+ * and approving it would disclose a value the agent never asked about. **That call belongs to
+ * `lib/store/dataset.ts` and is not wired up here**, because loading a dataset is the store's event to
+ * publish, not this module's to observe.
  *
- * Needs the stored fallback per gate, which `PendingEntry` does not currently keep. Add it there rather
- * than resolving with `undefined`, which would typecheck through the `unknown` cast above and then fail
- * inside whichever tool was waiting.
+ * Each gate resolves with the fallback `PendingEntry` recorded at creation, never with `undefined`:
+ * `undefined` would typecheck through the `unknown` cast on `resolve` and then fail inside whichever tool
+ * was waiting, which turns a safe abandonment into a thrown exception in a suspended tool call.
+ *
+ * Iterates a snapshot because each `resolve` deletes its own entry from the map while we are walking it.
+ * The `clear()` afterwards is belt and braces: every settle path already removes its own key, and this
+ * makes "no gate survives this call" true by construction rather than by every resolver remembering to.
  */
 export function abandonAllGates(): void {
-  throw new Error('abandonAllGates: not implemented')
+  for (const entry of [...pending.values()]) entry.resolve(entry.fallback)
+  pending.clear()
 }
