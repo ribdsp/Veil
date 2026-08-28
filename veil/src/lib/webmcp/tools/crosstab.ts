@@ -1,4 +1,7 @@
-import { notImplemented, type ToolDefinition } from '../tool-types'
+import { noteToolCall } from '@/lib/guard/host'
+import { activeGuard } from '@/lib/guard/session'
+
+import { fromVerdict, noDataset, requireString, toolError, type ToolDefinition } from '../tool-types'
 
 /**
  * A two-column contingency table, cell by cell, each cell k-checked on its own.
@@ -29,14 +32,40 @@ export const crosstab: ToolDefinition = {
     required: ['rowColumn', 'columnColumn'],
     additionalProperties: false,
   },
-  async execute() {
-    // TODO(riko), Day 4:
-    //   - refuse when either column has more than 12 distinct values, or the product exceeds 100 cells,
-    //     *before* building anything: say which column was too wide and suggest aggregate instead
-    //   - refuse when the two columns are the same — a diagonal table teaches nothing and costs two
-    //     charges
-    //   - `guard.crosstab(rowColumn, columnColumn)`, suppressing per cell
-    //   - report `suppressedCells` as a count so the agent can see how sparse the table really was
-    return notImplemented('crosstab')
+  async execute(args) {
+    const guard = activeGuard()
+    if (guard === null) return noDataset()
+
+    const rowColumn = requireString(args, 'rowColumn')
+    if (!rowColumn.ok) return toolError(rowColumn.error)
+
+    const columnColumn = requireString(args, 'columnColumn')
+    if (!columnColumn.ok) return toolError(columnColumn.error)
+
+    noteToolCall('crosstab', `${rowColumn.value} × ${columnColumn.value}`)
+
+    // Both the same-column check and the width check live in the guard, and both happen before a row is
+    // counted. Width is charged for on purpose: "that column is too wide to cross-tabulate" is a real fact
+    // about the file, and an agent that learns it for free learns the distinct count of every column for
+    // free with it.
+    return fromVerdict(guard.crosstab(rowColumn.value, columnColumn.value), (table) => ({
+      rowColumn: rowColumn.value,
+      columnColumn: columnColumn.value,
+      rowKeys: table.rowKeys,
+      columnKeys: table.columnKeys,
+      // Row-major: cells[i][j] is rowKeys[i] crossed with columnKeys[j]. A cell reads "suppressed" when it
+      // holds between 1 and k-1 rows; an empty combination is reported as 0, because zero is a fact about
+      // the categories rather than about anybody in them.
+      cells: table.cells,
+      suppressedCells: table.suppressedCells,
+      truncated: table.truncated,
+      note:
+        table.suppressedCells === 0
+          ? 'No cell needed suppressing: every combination present holds at least the minimum group size.'
+          : `${table.suppressedCells} cell(s) hold between 1 and the minimum group size minus one row, and ` +
+            `come back as "suppressed" rather than a count. A table this sparse usually means one of these ` +
+            `columns is closer to an identifier than a category — aggregate on the other one instead, or ` +
+            `ask a human to look at the thin combinations.`,
+    }))
   },
 }

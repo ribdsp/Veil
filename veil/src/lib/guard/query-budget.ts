@@ -23,6 +23,11 @@ export type ChargeResult =
   | { ok: true; remaining: number; state: BudgetState }
   | { ok: false; reason: string; remaining: 0 }
 
+/** Distinct columns, in the order they were named. */
+function distinct(columns: readonly ColumnId[]): readonly ColumnId[] {
+  return [...new Set(columns)]
+}
+
 /**
  * Charge one question against every column named.
  *
@@ -30,15 +35,35 @@ export type ChargeResult =
  * would leave the agent having paid for an answer it did not get, and — worse — a partial *answer* across
  * a crosstab would be a table with one axis silently missing, which reads as a real result.
  *
- * TODO(riko), Day 2: implement. Returns a new state rather than mutating the map — the store holds it, and
- * an in-place charge inside the guard makes the budget untestable without a store.
+ * Returns a new state rather than mutating the map — the store holds it, and an in-place charge inside the
+ * guard makes the budget untestable without a store.
  */
 export function charge(
-  _state: BudgetState,
-  _columns: readonly ColumnId[],
-  _limit: number = QUERIES_PER_COLUMN,
+  state: BudgetState,
+  columns: readonly ColumnId[],
+  limit: number = QUERIES_PER_COLUMN,
 ): ChargeResult {
-  throw new Error('charge: not implemented')
+  const named = distinct(columns)
+  const spent = named.filter((column) => remaining(state, column, limit) <= 0)
+
+  if (spent.length > 0) {
+    const which = spent.map((column) => `"${column}"`).join(', ')
+    return {
+      ok: false,
+      remaining: 0,
+      reason:
+        `No questions left on ${which}. Each column allows ${limit} questions per session and this ` +
+        `one is spent, so nothing was charged and nothing was answered. Ask about a different column, ` +
+        `or ask the person at the keyboard to look at this one.`,
+    }
+  }
+
+  const next = new Map(state)
+  for (const column of named) {
+    next.set(column, (state.get(column) ?? 0) + 1)
+  }
+
+  return { ok: true, remaining: remainingAcross(next, named, limit), state: next }
 }
 
 /**
@@ -48,40 +73,41 @@ export function charge(
  * `phone` spends them carefully; one that does not burns them on questions it could have skipped, hits a
  * wall mid-reasoning, and writes a worse report. Publishing the budget makes the agent a better citizen at
  * no privacy cost — the number tells it nothing about the data.
- *
- * TODO(riko), Day 2: implement.
  */
 export function remaining(
-  _state: BudgetState,
-  _column: ColumnId,
-  _limit: number = QUERIES_PER_COLUMN,
+  state: BudgetState,
+  column: ColumnId,
+  limit: number = QUERIES_PER_COLUMN,
 ): number {
-  throw new Error('remaining: not implemented')
+  const used = state.get(column) ?? 0
+  return Math.max(0, limit - used)
 }
 
 /**
  * The smallest remaining budget across several columns — what a multi-column tool reports.
  *
- * TODO(riko), Day 2: implement. Reporting the minimum rather than the sum or the average: the agent's next
- * multi-column question fails when the *tightest* column runs out, so the minimum is the number that
- * predicts its next refusal.
+ * Reporting the minimum rather than the sum or the average: the agent's next multi-column question fails
+ * when the *tightest* column runs out, so the minimum is the number that predicts its next refusal.
  */
 export function remainingAcross(
-  _state: BudgetState,
-  _columns: readonly ColumnId[],
-  _limit: number = QUERIES_PER_COLUMN,
+  state: BudgetState,
+  columns: readonly ColumnId[],
+  limit: number = QUERIES_PER_COLUMN,
 ): number {
-  throw new Error('remainingAcross: not implemented')
+  return distinct(columns).reduce(
+    (lowest, column) => Math.min(lowest, remaining(state, column, limit)),
+    limit,
+  )
 }
 
-/**
- * Columns with nothing left. Shown in the UI so the human can see where the agent hit the wall.
- *
- * TODO(riko), Day 2: implement.
- */
+/** Columns with nothing left. Shown in the UI so the human can see where the agent hit the wall. */
 export function exhaustedColumns(
-  _state: BudgetState,
-  _limit: number = QUERIES_PER_COLUMN,
+  state: BudgetState,
+  limit: number = QUERIES_PER_COLUMN,
 ): readonly ColumnId[] {
-  throw new Error('exhaustedColumns: not implemented')
+  const spent: ColumnId[] = []
+  for (const [column, used] of state) {
+    if (used >= limit) spent.push(column)
+  }
+  return spent
 }

@@ -1,4 +1,7 @@
-import { notImplemented, type ToolDefinition } from '../tool-types'
+import { noteToolCall } from '@/lib/guard/host'
+import { activeGuard } from '@/lib/guard/session'
+
+import { fromVerdict, noDataset, toolError, type ToolDefinition } from '../tool-types'
 
 /**
  * Everything wrong with the file, by row id and issue code.
@@ -31,17 +34,49 @@ export const findIssues: ToolDefinition = {
     },
     additionalProperties: false,
   },
-  async execute() {
-    // TODO(riko), Day 4:
-    //   - `guard.issues(column)`; with no column, charge every column and refuse the whole call if any
-    //     column is exhausted — a partial scan silently missing an exhausted column would read as "this
-    //     column is clean", which is the worst available answer
-    //   - cap row ids at 100 per issue and set `truncated: true`; never a silent slice
-    //   - order issues by count descending, so the first thing the agent reads is the biggest problem
-    //
-    // Issue *counts* are k-suppressed like everything else, and the row ids are not. That looks
-    // inconsistent and isn't: knowing 3 rows have a malformed phone is a fact about a group of 3, while
-    // knowing which rows they are is a fact about the file's layout. See docs/privacy-guard.md § Row ids.
-    return notImplemented('find_issues')
+  async execute(args) {
+    const guard = activeGuard()
+    if (guard === null) return noDataset()
+
+    // Absent means "all of them" — the empty list the guard reads as every column. An explicit empty string
+    // is a different thing: a column name the agent believes it has, and answering the wrong question is
+    // worse than saying which field was wrong.
+    const raw = args['column']
+    if (raw !== undefined && typeof raw !== 'string') {
+      return toolError("'column' must be a string naming one column when given. Omit it to scan all columns.")
+    }
+    if (raw !== undefined && raw.length === 0) {
+      return toolError("'column' was empty. Omit the field entirely to scan every column.")
+    }
+
+    const requested = raw === undefined ? [] : [raw]
+    const scanned = raw === undefined ? guard.columns().map((column) => column.id) : [raw]
+
+    noteToolCall('find_issues', raw === undefined ? `all ${scanned.length} column(s)` : raw)
+
+    // All-or-nothing across the columns scanned, which is why a whole-file scan refuses outright when any
+    // single column is exhausted. A scan that quietly skipped that column would report it as clean, and
+    // "clean" is the one wrong answer nobody re-checks.
+    return fromVerdict(guard.issues(requested), (issues) => ({
+      columnsScanned: scanned,
+      issueCount: issues.length,
+      // Ordered by affected rows descending upstream, so the first entry is the biggest problem.
+      issues: issues.map((issue) => ({
+        code: issue.code,
+        column: issue.column,
+        affectedCount: issue.affectedCount,
+        rowIds: issue.rowIds,
+        truncated: issue.truncated,
+      })),
+      note:
+        issues.length === 0
+          ? `No issues found in ${
+              raw === undefined ? 'any column' : `"${raw}"`
+            }. That is a real answer, not a suppressed one — a suppressed count says "suppressed", never 0.`
+          : 'Row numbers are positions in the file, not identities, so they are never suppressed — that is ' +
+            'what makes them worth returning. Use them as the "rows" argument to propose_transform to fix ' +
+            'exactly these rows, or hand them to a human with ask_human. Where "truncated" is true there ' +
+            'are more affected rows than the 100 listed; "affectedCount" is the real total.',
+    }))
   },
 }
