@@ -15,57 +15,89 @@ import type { Author, JournalEntry, JournalEventKind } from '@/types/domain'
  */
 
 /**
+ * The kinds that count as a refusal: the agent asked for something and did not get it.
+ *
+ * Named as a constant rather than inlined into `refusals()` because `submit_cleanup_report` compares its
+ * `unresolved` list against this set. Anything left out here is something an agent can silently drop from its
+ * report, so the membership of this list is a product decision:
+ *
+ * - `answerSuppressed` — a real answer existed and k-anonymity declined to report it. The rows behind it are
+ *   still unexamined, which is exactly what `unresolved` is for.
+ * - `revealRefused` — a human said no to a cell. The most plainly unresolved thing a session can contain.
+ * - `budgetExhausted` — the column closed before the question was answered. Practically identical to a
+ *   suppression from the human's side: nobody found out what is in there.
+ *
+ * Note what is deliberately *not* here. `revealRequested` is not a refusal — it may well have been granted, and
+ * counting it would double every reveal. A malformed query the agent then corrected is not one either: that is
+ * an agent learning the schema, not an open question about the data.
+ */
+export const REFUSAL_KINDS: readonly JournalEventKind[] = [
+  'answerSuppressed',
+  'revealRefused',
+  'budgetExhausted',
+]
+
+/**
  * Make an entry.
  *
- * TODO(vicko), Day 2: implement. `crypto.randomUUID()` for the id, `Date.now()` for `at`.
- *
- * TODO(vicko), Day 2: pass `at` in rather than reading the clock inside, or `journal.test.ts` cannot assert
- * ordering without sleeping. A test that sleeps is a test someone will delete.
+ * `at` is passed in rather than read from the clock inside, because otherwise `journal.test.ts` cannot assert
+ * ordering without sleeping — and a test that sleeps is a test someone will delete. Callers that do not care
+ * omit it and get `Date.now()`.
  */
 export function entry(
-  _kind: JournalEventKind,
-  _author: Author,
-  _subject: string,
-  _detail: string,
-  _options?: { irreversible?: boolean; at?: number },
+  kind: JournalEventKind,
+  author: Author,
+  subject: string,
+  detail: string,
+  options?: { irreversible?: boolean; at?: number },
 ): JournalEntry {
-  throw new Error('entry: not implemented')
+  return {
+    id: crypto.randomUUID(),
+    at: options?.at ?? Date.now(),
+    author,
+    kind,
+    subject,
+    detail,
+    irreversible: options?.irreversible ?? false,
+  }
 }
 
 /**
  * Add an entry. Returns a new array; never touches the old one.
  *
- * TODO(vicko), Day 2: implement as `[...journal, next]`. Resist the temptation to cap the length — a 10,000-
- * entry journal is 10,000 entries the human is entitled to, and a journal that silently drops its oldest lines
- * is worse than no journal because it looks complete. If rendering gets slow, virtualise the list; do not
- * truncate the record.
+ * There is deliberately no cap on the length. A 10,000-entry journal is 10,000 entries the human is entitled
+ * to, and a journal that silently drops its oldest lines is worse than no journal because it looks complete.
+ * If rendering gets slow, virtualise the list; do not truncate the record.
  */
 export function append(
-  _journal: readonly JournalEntry[],
-  _next: JournalEntry,
+  journal: readonly JournalEntry[],
+  next: JournalEntry,
 ): readonly JournalEntry[] {
-  throw new Error('append: not implemented')
+  return [...journal, next]
 }
 
 /**
  * Count the reveals that were granted this session.
  *
- * TODO(vicko), Day 3: implement by filtering on `kind === 'revealGranted'`. This number goes in the header in
- * red. Making the cost visible and cumulative is the whole mechanism: one reveal is a judgement call, and
- * eleven reveals is a habit the human should be able to notice they have formed.
+ * This number goes in the header in red. Making the cost visible and cumulative is the whole mechanism: one
+ * reveal is a judgement call, and eleven reveals is a habit the human should be able to notice they have
+ * formed. Derived from the journal rather than from a counter so it cannot drift away from the record.
  */
-export function revealsGranted(_journal: readonly JournalEntry[]): number {
-  throw new Error('revealsGranted: not implemented')
+export function revealsGranted(journal: readonly JournalEntry[]): number {
+  return journal.filter((line) => line.kind === 'revealGranted').length
 }
 
 /**
  * The refusals, for the report the agent files at the end.
  *
- * TODO(vicko), Day 5: implement. `submit_cleanup_report` compares its `unresolved` list against this, and the
- * UI shows the human anything the agent left out. An agent that quietly drops a refused cell from its report is
- * the exact failure this project is meant to make visible, so it must not be possible to file a clean report
- * over a journal full of refusals without the discrepancy being on screen.
+ * `submit_cleanup_report` compares its `unresolved` list against this, and the UI shows the human anything the
+ * agent left out. An agent that quietly drops a refused cell from its report is the exact failure this project
+ * is meant to make visible, so it must not be possible to file a clean report over a journal full of refusals
+ * without the discrepancy being on screen.
+ *
+ * Order is preserved: these are the journal's own lines, in the order they happened, so the caller can quote
+ * them back at the human without re-sorting.
  */
-export function refusals(_journal: readonly JournalEntry[]): readonly JournalEntry[] {
-  throw new Error('refusals: not implemented')
+export function refusals(journal: readonly JournalEntry[]): readonly JournalEntry[] {
+  return journal.filter((line) => REFUSAL_KINDS.includes(line.kind))
 }
